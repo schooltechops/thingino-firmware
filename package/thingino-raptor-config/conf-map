@@ -180,6 +180,8 @@ str rtsp session_info RAPTOR_RTSP_SESSION_INFO
 str rtsp session_timeout RAPTOR_RTSP_SESSION_TIMEOUT
 str rtsp tcp_sndbuf RAPTOR_RTSP_TCP_SNDBUF
 bool rtsp rtcp_sr RAPTOR_RTSP_RTCP_SR
+str rtsp sendq_slots RAPTOR_RTSP_SENDQ_SLOTS
+str rtsp ip_tos RAPTOR_RTSP_IP_TOS
 bool rtsp backchannel RAPTOR_RTSP_BACKCHANNEL
 str rtsp backchannel_codecs RAPTOR_RTSP_BACKCHANNEL_CODECS
 bool rtsp sei_timecode RAPTOR_RTSP_SEI_TIMECODE
