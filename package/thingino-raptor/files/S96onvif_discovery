@@ -105,7 +105,40 @@ raptor_webrtc_port() {
 	echo "$port"
 }
 
+# ONVIF can only describe G711, G726 and AAC; anything else is advertised as no audio
+# rather than as a codec the stream does not carry (NVRs then skip the audio track).
+raptor_onvif_audio_encoder() {
+	[ "$(raptor_bool_default audio enabled true)" = "true" ] || { echo "NONE"; return; }
+	codec=$(raptor_conf_get audio codec | tr 'A-Z' 'a-z')
+	case "${codec:-l16}" in
+		aac) echo "AAC" ;;
+		pcma | pcmu) echo "G711" ;;
+		*) echo "NONE" ;;
+	esac
+}
+
+# Advertise what the stream really carries: fps (stream, else sensor, else raptor's 25),
+# bitrate in kbps, codec. NVRs (UniFi Protect among them) pace and validate the stream by
+# these values, so the static 30 fps / G711 defaults of onvif.json were wrong for most cameras.
+configure_raptor_onvif_stream() {
+	n="$1"
+	fps=$(raptor_conf_get "stream$n" fps)
+	[ -n "$fps" ] && [ "$fps" != "0" ] || fps=$(raptor_conf_get sensor fps)
+	[ -n "$fps" ] && [ "$fps" != "0" ] || fps=25
+	bitrate=$(raptor_conf_get "stream$n" bitrate)
+	[ -n "$bitrate" ] || { [ "$n" = 0 ] && bitrate=3000000 || bitrate=1000000; }
+	codec=$(raptor_conf_get "stream$n" codec | tr 'a-z' 'A-Z')
+	[ -n "$codec" ] || codec=H264
+	jct "$tmpfile" set profiles.stream$n.framerate "$fps"
+	jct "$tmpfile" set profiles.stream$n.bitrate "$((bitrate / 1000))"
+	jct "$tmpfile" set profiles.stream$n.type "$codec"
+	jct "$tmpfile" set profiles.stream$n.audio_encoder "$audio_encoder"
+}
+
 configure_raptor_onvif_profiles() {
+	audio_encoder=$(raptor_onvif_audio_encoder)
+	configure_raptor_onvif_stream 0
+	configure_raptor_onvif_stream 1
 	rtsp_scheme=$(raptor_rtsp_scheme)
 	rtsp_port=$(raptor_rtsp_port)
 	endpoint_main=$(raptor_rtsp_endpoint 0)
