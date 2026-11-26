@@ -117,6 +117,16 @@ fi
 [ "$DRY" = 1 ] && { say "dry run: nothing uploaded"; exit 0; }
 
 # --- 5. upload, verify, flash --------------------------------------------------------------------------------
+# Low-RAM cameras (64 MB, ~37 MB usable): /tmp is RAM, and older sysupgrade keeps the streamer running while it
+# flashes. With an 8 MB image in /tmp that can run the camera out of memory part-way through the flash.
+# Stop the streamer and other heavy daemons first, then require the image + 12 MiB of headroom.
+say "freeing memory on the camera (streamer and helpers stopped; the flash reboots it anyway)"
+cam 'for s in /etc/init.d/S31prudynt /etc/init.d/S31raptor /etc/init.d/S32raptor-motion /etc/init.d/S33raptor-privacy /etc/init.d/S9*; do [ -x "$s" ] && "$s" stop >/dev/null 2>&1; done; sync; echo 3 > /proc/sys/vm/drop_caches' || true
+avail_kb=$(cam "awk '/^MemAvailable:/{print \$2}' /proc/meminfo")
+[ -n "$avail_kb" ] || avail_kb=$(cam "awk '/^MemFree:/{f=\$2} /^Cached:/{c=\$2} END{print f+c}' /proc/meminfo")
+need_kb=$((img_size / 1024 + 12288))
+echo "    memory available ${avail_kb} KiB, need ${need_kb} KiB"
+[ "$avail_kb" -gt "$need_kb" ] || die "not enough free memory on the camera (${avail_kb} KiB < ${need_kb} KiB); reboot it and retry"
 free_kb=$(cam "df -k /tmp | awk 'NR==2{print \$4}'")
 [ "$free_kb" -gt $((img_size / 1024 + 2048)) ] || die "only ${free_kb} KiB free in /tmp on the camera"
 say "uploading"
