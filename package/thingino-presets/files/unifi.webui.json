@@ -1,0 +1,14 @@
+{
+  "name": "presets-unifi",
+  "label": "UniFi Protect mode",
+  "apiVersion": 1,
+  "nav": [
+    {
+      "section": "ddSettings",
+      "position": "append",
+      "items": [
+        { "label": "UniFi Protect", "href": "/config-unifi.html" }
+      ]
+    }
+  ]
+}
