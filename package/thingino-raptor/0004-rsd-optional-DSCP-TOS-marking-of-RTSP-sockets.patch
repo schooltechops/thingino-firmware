@@ -1,0 +1,102 @@
+From f3942ea5d51d00d5b1c0467052855ebf82b4178d Mon Sep 17 00:00:00 2001
+From: Rob Pelletier <ropelletier@rsu87.org>
+Date: Thu, 26 Nov 2026 11:22:02 -0500
+Subject: [PATCH 2/2] rsd: optional DSCP/TOS marking of RTSP sockets ([rtsp]
+ ip_tos)
+
+Wi-Fi drivers place outgoing frames in a WMM access category taken from
+the IP precedence bits. Unmarked RTSP media goes out as best effort,
+whose contention window grows to 1023 slots after collisions; on a busy
+2.4 GHz channel that turns short hiccups into multi-second stalls. The
+video category stays at 7-15 slots.
+
+Add [rtsp] ip_tos (0 = off, the default, so nothing changes unless
+configured). When set, accepted RTSP sockets get IP_TOS, IPV6_TCLASS
+(sockets are dual-stack with IPv4-mapped peers) and SO_PRIORITY. 160
+(0xa0, CS5) selects the video category. Verified on the wire with
+tcpdump (tos 0xa0) on a T31X camera.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/raptor.conf |  1 +
+ rsd/rsd.h          |  1 +
+ rsd/rsd_main.c     |  7 +++++--
+ rsd/rsd_server.c   | 13 +++++++++++++
+ 4 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/config/raptor.conf b/config/raptor.conf
+index c6bd63a..529e145 100644
+--- a/config/raptor.conf
++++ b/config/raptor.conf
+@@ -244,6 +244,7 @@ video_device = /dev/video0
+ # session_info =              # SDP session description (i=)
+ # session_timeout = 60        # RTSP session timeout in seconds (min 10)
+ # tcp_sndbuf = 65536          # requested TCP send-buffer bytes; Linux doubles/caps it
++# ip_tos = 0                  # TOS/DSCP byte on RTSP sockets, 0 = off; 160 (0xa0, CS5) puts video in the Wi-Fi WMM video queue
+ # sendq_slots = 32            # per-client queue (frames+audio chunks, 8-1024); raise on weak Wi-Fi so stalls do not drop video to the next IDR
+ #                             # (lower bounds stale data; blocking writes split large IDRs)
+ # backchannel = false         # two-way audio (ONVIF Profile T). Offers PCMU,
+diff --git a/rsd/rsd.h b/rsd/rsd.h
+index 32e4f6a..5b51805 100644
+--- a/rsd/rsd.h
++++ b/rsd/rsd.h
+@@ -236,6 +236,7 @@ typedef struct rsd_server {
+ 	int session_timeout; /* RTSP session timeout in seconds */
+ 	int tcp_sndbuf;	     /* TCP send buffer size (bytes) */
+ 	int sendq_slots; /* per-client send queue depth ([rtsp] sendq_slots) */
++	int ip_tos; /* TOS/DSCP byte for RTSP sockets, 0 = leave alone ([rtsp] ip_tos) */
+ 	bool rtcp_sr;	     /* send RTCP Sender Reports (default true) */
+ 	bool jpeg_enabled;   /* expose JPEG streams (default false) */
+ 	bool sei_timecode;   /* per-frame ST 0604 UTC SEI (default true) */
+diff --git a/rsd/rsd_main.c b/rsd/rsd_main.c
+index 8a48af2..4331aac 100644
+--- a/rsd/rsd_main.c
++++ b/rsd/rsd_main.c
+@@ -86,6 +86,9 @@ int main(int argc, char **argv)
+ 		srv.session_timeout = 10;
+ 	srv.tcp_sndbuf = rss_config_get_int(dctx.cfg, "rtsp", "tcp_sndbuf", 64 * 1024);
+ 	srv.sendq_slots = rss_config_get_int(dctx.cfg, "rtsp", "sendq_slots", RSD_SENDQ_SLOTS);
++	srv.ip_tos = rss_config_get_int(dctx.cfg, "rtsp", "ip_tos", 0);
++	if (srv.ip_tos < 0 || srv.ip_tos > 255)
++		srv.ip_tos = 0;
+ 	srv.rtcp_sr = rss_config_get_bool(dctx.cfg, "rtsp", "rtcp_sr", true);
+ 	srv.idr_on_join = rss_config_get_bool(dctx.cfg, "rtsp", "idr_on_join", true);
+ 	srv.jpeg_enabled = rss_config_get_bool(dctx.cfg, "rtsp", "jpeg", false);
+@@ -186,8 +189,8 @@ int main(int argc, char **argv)
+ #endif
+ 
+ 	RSS_INFO("RTSP listening on port %d%s", srv.port, tls_enabled ? " (TLS)" : "");
+-	RSS_DEBUG("  max_clients=%d session_timeout=%d tcp_sndbuf=%d sendq_slots=%d rtcp_sr=%d", srv.max_clients,
+-		  srv.session_timeout, srv.tcp_sndbuf, srv.sendq_slots, srv.rtcp_sr);
++	RSS_DEBUG("  max_clients=%d session_timeout=%d tcp_sndbuf=%d sendq_slots=%d ip_tos=0x%02x rtcp_sr=%d", srv.max_clients,
++		  srv.session_timeout, srv.tcp_sndbuf, srv.sendq_slots, srv.ip_tos, srv.rtcp_sr);
+ 
+ 	ret = rsd_server_init(&srv);
+ 	if (ret != 0) {
+diff --git a/rsd/rsd_server.c b/rsd/rsd_server.c
+index 9c1293b..dcff868 100644
+--- a/rsd/rsd_server.c
++++ b/rsd/rsd_server.c
+@@ -219,6 +219,19 @@ static void accept_client(rsd_server_t *srv)
+ 			RSS_DEBUG("TCP send buffer requested=%d actual=%d", sndbuf, actual);
+ 	}
+ 
++	/* [rtsp] ip_tos: mark the media socket (e.g. 0xa0 = DSCP CS5). Wi-Fi
++	 * drivers map the precedence bits to a WMM access category; video's
++	 * backoff window stays at 7-15 slots where best effort grows to 1023,
++	 * so on a crowded 2.4 GHz channel stalls stay short. Sockets are
++	 * dual-stack (IPv4-mapped peers), so set both families. */
++	if (srv->ip_tos > 0) {
++		int tos = srv->ip_tos, prio = (srv->ip_tos >> 5) & 7;
++		if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0)
++			RSS_DEBUG("IP_TOS: %s", strerror(errno));
++		setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tos, sizeof(tos));
++		setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &prio, sizeof(prio));
++	}
++
+ 	rsd_client_t *client = calloc(1, sizeof(*client));
+ 	if (!client) {
+ 		close(fd);
+-- 
+2.43.0
+

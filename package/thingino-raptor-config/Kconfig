@@ -1122,6 +1122,23 @@ config RAPTOR_RTSP_TCP_SNDBUF
 	string "tcp_sndbuf bytes (default 65536)"
 	default ""
 
+config RAPTOR_RTSP_SENDQ_SLOTS
+	string "sendq_slots - per-client send queue depth (default 32)"
+	default ""
+	help
+	  Frames plus audio chunks queued per RTSP client (8..1024). When a
+	  client stalls longer than the queue lasts (32 is about 0.4 s), all
+	  queued video is dropped until the next keyframe. 256 rides out
+	  1-3 s Wi-Fi stalls; memory is only used while a client is stalled.
+
+config RAPTOR_RTSP_IP_TOS
+	string "ip_tos - TOS/DSCP byte on RTSP sockets (default 0 = off)"
+	default ""
+	help
+	  160 (0xa0, DSCP CS5) puts RTSP media in the Wi-Fi WMM video queue,
+	  which keeps its backoff short on a crowded channel. 0 leaves the
+	  sockets unmarked.
+
 choice
 	prompt "backchannel - two-way audio (default true)"
 	default RAPTOR_RTSP_BACKCHANNEL_TRUE
