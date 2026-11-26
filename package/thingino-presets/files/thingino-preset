@@ -1,0 +1,289 @@
+#!/bin/sh
+# thingino-preset -- apply a named set of settings (a preset) across raptor.conf, onvif.json and thingino.json.
+#
+#   thingino-preset list                 id <TAB> name <TAB> builtin|user <TAB> active|-
+#   thingino-preset show <id>            the preset file
+#   thingino-preset diff <id>            file <TAB> key <TAB> current <TAB> new   (only what would change)
+#   thingino-preset apply <id> [--no-reboot]
+#                                        snapshot touched files, write values, restart what is needed;
+#                                        reboots when a streamer setting changed (unless --no-reboot)
+#   thingino-preset undo [--no-reboot]   restore the files saved by the last apply
+#   thingino-preset save <id> <name>     save the current values of every managed key as a user preset
+#   thingino-preset status               active preset and whether its settings were changed since
+#
+# Preset files: built-in in /usr/share/thingino/presets, user presets in /etc/presets (same id wins).
+#   {"id": "...", "name": "...", "description": "...",
+#    "raptor":   ["section.key=value", ...],     empty value = remove the key (streamer default)
+#    "onvif":    ["motion_alarm=false", "ptz.enable=auto", "<jct path>=value", ...],
+#    "thingino": ["<jct path>=value", ...],
+#    "reset": true}                              reset = unset every key any preset manages
+#
+# Paths can be overridden for testing: PRESET_DIRS, PRESET_STATE, RAPTOR_CONF, ONVIF_CONF, ONVIF_ROM, THINGINO_CONF.
+# shellcheck disable=SC3043
+
+PRESET_DIRS="${PRESET_DIRS:-/etc/presets /usr/share/thingino/presets}"
+PRESET_STATE="${PRESET_STATE:-/etc/presets}"
+RAPTOR_CONF="${RAPTOR_CONF:-/etc/raptor.conf}"
+ONVIF_CONF="${ONVIF_CONF:-/etc/onvif.json}"
+ONVIF_ROM="${ONVIF_ROM:-/rom/etc/onvif.json}"
+THINGINO_CONF="${THINGINO_CONF:-/etc/thingino.json}"
+MOTION_ALARM_TOPIC="tns1:VideoSource/MotionAlarm"
+
+die() { echo "thingino-preset: $*" >&2; exit 1; }
+
+# ---- preset files -------------------------------------------------------------------------------------------
+preset_file() {
+	for d in $PRESET_DIRS; do
+		[ -f "$d/$1.json" ] && { echo "$d/$1.json"; return 0; }
+	done
+	return 1
+}
+
+all_ids() {
+	for d in $PRESET_DIRS; do
+		for f in "$d"/*.json; do [ -f "$f" ] && basename "$f" .json; done
+	done | sort -u
+}
+
+# print the entries of array $2 in preset $1, one per line
+entries() {
+	local i=0 v
+	while v=$(jct "$1" get "$2.$i" 2>/dev/null) && [ -n "$v" ]; do
+		printf '%s\n' "$v"
+		i=$((i + 1))
+	done
+}
+
+# ---- raptor.conf (INI; a commented header "# [x]" also ends a section, as in gen-raptor-conf.sh) ----------------
+ini_get() {   # section key
+	awk -v s="$1" -v k="$2" '
+		/^[# ]*\[/ { in_s = ($0 == "[" s "]"); next }
+		in_s && $0 ~ "^[ \t]*" k "[ \t]*=" {
+			v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v); print v; exit
+		}' "$RAPTOR_CONF"
+}
+
+ini_set() {   # section key value   (empty value: comment the key out)
+	local tmp="$RAPTOR_CONF.preset.$$"
+	awk -v s="$1" -v k="$2" -v val="$3" '
+		BEGIN { done = 0; seen = 0 }
+		/^[# ]*\[/ {
+			if (in_s && !done && val != "") { print k " = " val; done = 1 }
+			in_s = ($0 == "[" s "]"); if (in_s) seen = 1
+			print; next
+		}
+		in_s && !done && $0 ~ "^[ \t]*" k "[ \t]*=" {          # live line
+			if (val == "") print "# " $0; else print k " = " val
+			done = 1; next
+		}
+		in_s && !done && val != "" && $0 ~ "^#[ \t]*" k "[ \t]*=" {   # commented default
+			print k " = " val; done = 1; next
+		}
+		{ print }
+		END {
+			if (!done && val != "") {
+				if (!seen) print "\n[" s "]"
+				else if (!in_s) { print "[" s "]" }
+				print k " = " val
+			}
+		}' "$RAPTOR_CONF" >"$tmp" && mv "$tmp" "$RAPTOR_CONF"
+}
+
+split_key() {   # "osd.timestamp.enabled" -> section "osd.timestamp", key "enabled"
+	SEC="${1%.*}"
+	KEY="${1##*.}"
+}
+
+# ---- onvif.json ---------------------------------------------------------------------------------------------
+has_motors() { [ -x /bin/motors ] || [ -x /usr/bin/motors ] || [ -x /sbin/motors ]; }
+
+onvif_motion_alarm_get() {
+	jct "$ONVIF_CONF" path "\$.events[?(@.topic==\"$MOTION_ALARM_TOPIC\")]" --mode values 2>/dev/null | grep -q topic && echo true || echo false
+}
+
+onvif_motion_alarm_set() {   # true|false -- jct import replaces arrays, so rebuild events
+	local keep add tmp="/tmp/preset-onvif.$$.json"
+	keep=$(jct "$ONVIF_CONF" path "\$.events[?(@.topic!=\"$MOTION_ALARM_TOPIC\")]" --mode values 2>/dev/null)
+	[ -n "$keep" ] || keep="[]"
+	if [ "$1" = "true" ]; then
+		add=$(jct "$ONVIF_ROM" path "\$.events[?(@.topic==\"$MOTION_ALARM_TOPIC\")]" --mode values 2>/dev/null)
+		[ -n "$add" ] && [ "$add" != "[]" ] || die "no $MOTION_ALARM_TOPIC event in $ONVIF_ROM to restore"
+		if [ "$keep" = "[]" ]; then keep="$add"; else keep="${add%]},${keep#[}"; fi
+	fi
+	printf '{"events":%s}\n' "$keep" >"$tmp"
+	jct "$ONVIF_CONF" import "$tmp" >/dev/null
+	rm -f "$tmp"
+}
+
+onvif_get() {
+	case "$1" in
+	motion_alarm) onvif_motion_alarm_get ;;
+	*) jct "$ONVIF_CONF" get "$1" 2>/dev/null ;;
+	esac
+}
+
+onvif_want() {   # resolve "auto" values against this camera
+	case "$1=$2" in
+	ptz.enable=auto) has_motors && echo 1 || echo 0 ;;
+	*) echo "$2" ;;
+	esac
+}
+
+onvif_set() {
+	case "$1" in
+	motion_alarm) onvif_motion_alarm_set "$2" ;;
+	*) if [ -z "$2" ]; then jct "$ONVIF_CONF" del "$1" >/dev/null; else jct "$ONVIF_CONF" set "$1" "$2" >/dev/null; fi ;;
+	esac
+}
+
+# Empty fields collapse when a line is read back with IFS=<tab> (tab is IFS whitespace),
+# so "unset" travels as '@' between walk() and its readers.
+row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-@}" "${4:-@}"; }
+unat() { [ "$1" = "@" ] && echo "" || echo "$1"; }
+
+# ---- one generic walk: emit "file<TAB>key<TAB>current<TAB>wanted" for every entry of a preset ------------------
+walk() {   # preset_file
+	local f="$1" e k v cur
+	if [ "$(jct "$f" get reset 2>/dev/null)" = "true" ]; then
+		for id in $(all_ids); do
+			pf=$(preset_file "$id"); [ "$pf" = "$f" ] && continue
+			entries "$pf" raptor | while IFS= read -r e; do printf '%s\n' "${e%%=*}"; done
+		done | sort -u | while IFS= read -r k; do
+			split_key "$k"; row raptor "$k" "$(ini_get "$SEC" "$KEY")" ""
+		done
+		row onvif motion_alarm "$(onvif_motion_alarm_get)" true
+		return 0
+	fi
+	entries "$f" raptor | while IFS= read -r e; do
+		k="${e%%=*}"; v="${e#*=}"; split_key "$k"
+		row raptor "$k" "$(ini_get "$SEC" "$KEY")" "$v"
+	done
+	entries "$f" onvif | while IFS= read -r e; do
+		k="${e%%=*}"; v="${e#*=}"
+		row onvif "$k" "$(onvif_get "$k")" "$(onvif_want "$k" "$v")"
+	done
+	entries "$f" thingino | while IFS= read -r e; do
+		k="${e%%=*}"; v="${e#*=}"
+		row thingino "$k" "$(jct "$THINGINO_CONF" get "$k" 2>/dev/null)" "$v"
+	done
+}
+
+changes() { walk "$1" | awk -F '\t' '$3 != $4'; }
+
+# ---- commands -----------------------------------------------------------------------------------------------
+cmd_list() {
+	local active
+	active=$(cat "$PRESET_STATE/.active" 2>/dev/null)
+	for id in $(all_ids); do
+		f=$(preset_file "$id")
+		case "$f" in "$PRESET_STATE"/*) src=user ;; *) src=builtin ;; esac
+		[ "$id" = "$active" ] && a=active || a=-
+		printf '%s\t%s\t%s\t%s\n' "$id" "$(jct "$f" get name 2>/dev/null)" "$src" "$a"
+	done
+}
+
+restart_after() {   # files touched (raptor onvif thingino), no_reboot flag
+	case " $1 " in *" raptor "*)
+		if [ "$2" = "1" ]; then
+			echo "reboot required: streamer settings changed"
+		else
+			echo "rebooting to apply streamer settings"
+			sync; (sleep 3; reboot) >/dev/null 2>&1 &
+		fi
+		return 0 ;;
+	esac
+	case " $1 " in *" onvif "*)
+		for svc in onvif_notify onvif_discovery; do
+			if command -v service >/dev/null 2>&1; then
+				service restart "$svc" >/dev/null 2>&1
+			else
+				for s in /etc/init.d/S*"$svc"; do [ -x "$s" ] && "$s" restart >/dev/null 2>&1; done
+			fi
+		done ;;
+	esac
+}
+
+snapshot() {   # files...
+	mkdir -p "$PRESET_STATE"
+	rm -f "$PRESET_STATE/.undo.tar"
+	tar -cf "$PRESET_STATE/.undo.tar" "$@" 2>/dev/null || die "cannot snapshot $*"
+	cp "$PRESET_STATE/.active" "$PRESET_STATE/.undo.active" 2>/dev/null || rm -f "$PRESET_STATE/.undo.active"
+}
+
+cmd_apply() {
+	local f id="$1" no_reboot="$2" c files touched=""
+	f=$(preset_file "$id") || die "no preset '$id'"
+	c=$(changes "$f")
+	if [ -z "$c" ]; then
+		echo "$id: nothing to change"
+		mkdir -p "$PRESET_STATE"; echo "$id" >"$PRESET_STATE/.active"
+		return 0
+	fi
+	files=""
+	echo "$c" | grep -q '^raptor' && files="$files $RAPTOR_CONF" && touched="$touched raptor"
+	echo "$c" | grep -q '^onvif' && files="$files $ONVIF_CONF" && touched="$touched onvif"
+	echo "$c" | grep -q '^thingino' && files="$files $THINGINO_CONF" && touched="$touched thingino"
+	# shellcheck disable=SC2086
+	snapshot $files
+	echo "$c" | while IFS="$(printf '\t')" read -r file k cur want; do
+		cur=$(unat "$cur"); want=$(unat "$want")
+		case "$file" in
+		raptor) split_key "$k"; ini_set "$SEC" "$KEY" "$want" ;;
+		onvif) onvif_set "$k" "$want" ;;
+		thingino) if [ -z "$want" ]; then jct "$THINGINO_CONF" del "$k" >/dev/null; else jct "$THINGINO_CONF" set "$k" "$want" >/dev/null; fi ;;
+		esac
+		printf '%s\t%s\t%s -> %s\n' "$file" "$k" "${cur:-default}" "${want:-default}"
+	done
+	echo "$id" >"$PRESET_STATE/.active"
+	restart_after "$touched" "$no_reboot"
+}
+
+cmd_undo() {
+	[ -f "$PRESET_STATE/.undo.tar" ] || die "nothing to undo"
+	local list touched=""
+	list=$(tar -tf "$PRESET_STATE/.undo.tar")
+	tar -xf "$PRESET_STATE/.undo.tar" -C / || die "undo failed"
+	echo "$list" | grep -q "${RAPTOR_CONF#/}" && touched="$touched raptor"
+	echo "$list" | grep -q "${ONVIF_CONF#/}" && touched="$touched onvif"
+	if [ -f "$PRESET_STATE/.undo.active" ]; then mv "$PRESET_STATE/.undo.active" "$PRESET_STATE/.active"; else rm -f "$PRESET_STATE/.active"; fi
+	rm -f "$PRESET_STATE/.undo.tar"
+	echo "restored:$(echo "$list" | sed 's#^# /#' | tr '\n' ' ')"
+	restart_after "$touched" "$1"
+}
+
+cmd_save() {   # id name
+	local id="$1" name="$2" out keys
+	case "$id" in *[!a-z0-9_-]* | "") die "preset id must be [a-z0-9_-]" ;; esac
+	mkdir -p "$PRESET_STATE"; out="$PRESET_STATE/$id.json"
+	keys=$(for i in $(all_ids); do entries "$(preset_file "$i")" raptor; done | sed 's/=.*//' | sort -u)
+	{
+		printf '{"id":"%s","name":"%s","description":"Saved from the camera on %s","raptor":[' "$id" "$name" "$(date '+%F %R')"
+		sep=""
+		for k in $keys; do
+			split_key "$k"; v=$(ini_get "$SEC" "$KEY")
+			printf '%s"%s=%s"' "$sep" "$k" "$v"; sep=","
+		done
+		printf '],"onvif":["motion_alarm=%s"]}\n' "$(onvif_motion_alarm_get)"
+	} >"$out"
+	echo "saved $out"
+}
+
+cmd_status() {
+	local active f
+	active=$(cat "$PRESET_STATE/.active" 2>/dev/null)
+	[ -n "$active" ] || { echo "none"; return 0; }
+	f=$(preset_file "$active") || { echo "$active (preset file missing)"; return 0; }
+	if [ -z "$(changes "$f")" ]; then echo "$active"; else echo "$active (modified)"; fi
+}
+
+command -v jct >/dev/null || die "jct not found"
+case "$1" in
+list) cmd_list ;;
+show) f=$(preset_file "$2") || die "no preset '$2'"; cat "$f" ;;
+diff) f=$(preset_file "$2") || die "no preset '$2'"; changes "$f" | sed 's/\t@\t/\tdefault\t/; s/\t@$/\tdefault/' ;;
+apply) [ -n "$2" ] || die "usage: apply <id> [--no-reboot]"; [ "$3" = "--no-reboot" ] && nr=1 || nr=0; cmd_apply "$2" "$nr" ;;
+undo) [ "$2" = "--no-reboot" ] && nr=1 || nr=0; cmd_undo "$nr" ;;
+save) [ -n "$3" ] || die "usage: save <id> <name>"; cmd_save "$2" "$3" ;;
+status) cmd_status ;;
+*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
