@@ -1123,6 +1123,26 @@ config RAPTOR_RTSP_TCP_SNDBUF
 	default ""
 
 choice
+	prompt "rtcp_sr - RTCP Sender Reports (default true)"
+	default RAPTOR_RTSP_RTCP_SR_DEFAULT
+	help
+	  RTCP Sender Reports every 5 s, mapping RTP timestamps to wall
+	  clock. NVRs use them for A/V sync. Some players (VLC) log a
+	  stream discontinuity on every report; turning them off avoids
+	  that.
+
+config RAPTOR_RTSP_RTCP_SR_DEFAULT
+	bool "default"
+
+config RAPTOR_RTSP_RTCP_SR_TRUE
+	bool "true"
+
+config RAPTOR_RTSP_RTCP_SR_FALSE
+	bool "false"
+
+endchoice
+
+choice
 	prompt "backchannel - two-way audio (default true)"
 	default RAPTOR_RTSP_BACKCHANNEL_TRUE
 	help
