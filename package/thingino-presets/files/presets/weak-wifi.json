@@ -1,0 +1,12 @@
+{
+  "id": "weak-wifi",
+  "name": "Weak Wi-Fi",
+  "description": "For a camera on a poor or crowded 2.4 GHz link: 15 fps, 4 s keyframes, VBR 1 Mbps main / 200 kbps sub, lighter AAC audio, no RTCP sender reports, deeper send queue and Wi-Fi video priority.",
+  "raptor": [
+    "sensor.fps=15",
+    "stream0.fps=15", "stream0.gop=30", "stream0.rc_mode=vbr", "stream0.bitrate=1000000",
+    "stream1.fps=10", "stream1.gop=20", "stream1.rc_mode=vbr", "stream1.bitrate=200000",
+    "audio.enabled=true", "audio.codec=aac", "audio.sample_rate=16000", "audio.bitrate=24000",
+    "rtsp.rtcp_sr=false", "rtsp.tcp_sndbuf=262144", "rtsp.sendq_slots=256", "rtsp.ip_tos=160"
+  ]
+}

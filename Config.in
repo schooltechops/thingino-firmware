@@ -165,6 +165,7 @@ source "$BR2_EXTERNAL_THINGINO_PATH/package/thingino-uhttpd/Config.in"
 source "$BR2_EXTERNAL_THINGINO_PATH/package/thingino-ustream-ssl/Config.in"
 source "$BR2_EXTERNAL_THINGINO_PATH/package/thingino-webserver/Config.in"
 source "$BR2_EXTERNAL_THINGINO_PATH/package/thingino-webui/Config.in"
+source "$BR2_EXTERNAL_THINGINO_PATH/package/thingino-presets/Config.in"
 endif
 
 menuconfig BR2_THINGINO_STREAMER_PACKAGES

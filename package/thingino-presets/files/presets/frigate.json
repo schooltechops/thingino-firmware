@@ -1,0 +1,13 @@
+{
+  "id": "frigate",
+  "name": "Frigate / go2rtc",
+  "description": "Recording and detection in Frigate: 20 fps main with 1 s keyframes (clean recording segments), 10 fps sub stream for detection, VBR, AAC audio for recordings, RTCP sender reports on (A/V sync in go2rtc), camera-side motion detection off (Frigate detects), deeper send queue and Wi-Fi video priority.",
+  "raptor": [
+    "sensor.fps=20",
+    "stream0.fps=20", "stream0.gop=10", "stream0.rc_mode=vbr", "stream0.bitrate=2500000",
+    "stream1.fps=10", "stream1.gop=5", "stream1.rc_mode=vbr", "stream1.bitrate=300000",
+    "audio.enabled=true", "audio.codec=aac", "audio.sample_rate=16000", "audio.bitrate=32000",
+    "rtsp.rtcp_sr=true", "rtsp.max_clients=4", "rtsp.tcp_sndbuf=262144", "rtsp.sendq_slots=256", "rtsp.ip_tos=160",
+    "motion.enabled=false"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "presets",
+  "label": "Settings presets",
+  "apiVersion": 1,
+  "nav": [
+    {
+      "section": "ddSettings",
+      "position": "append",
+      "items": [
+        { "label": "Presets", "href": "/config-presets.html" }
+      ]
+    }
+  ]
+}

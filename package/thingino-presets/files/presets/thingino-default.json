@@ -1,0 +1,6 @@
+{
+  "id": "thingino-default",
+  "name": "Thingino defaults",
+  "description": "Remove every setting the other presets manage, so the streamer's built-in defaults apply again, and restore the ONVIF motion events.",
+  "reset": true
+}

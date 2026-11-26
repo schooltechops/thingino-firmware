@@ -1,0 +1,12 @@
+config BR2_PACKAGE_THINGINO_PRESETS
+	bool "Settings presets"
+	default y if BR2_PACKAGE_THINGINO_WEBUI && BR2_PACKAGE_THINGINO_RAPTOR
+	depends on BR2_PACKAGE_THINGINO_RAPTOR
+	help
+	  Named sets of streamer (raptor.conf), ONVIF (onvif.json) and system
+	  (thingino.json) settings that are applied in one step, shown as a
+	  diff first and undoable. Built-in presets: UniFi Protect, Frigate /
+	  go2rtc, Weak Wi-Fi and Thingino defaults; users can save their own.
+
+	  CLI: thingino-preset list|show|diff|apply|undo|save|status
+	  Web UI: Settings > Presets
