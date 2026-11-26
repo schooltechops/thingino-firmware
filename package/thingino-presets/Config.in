@@ -10,3 +10,15 @@ config BR2_PACKAGE_THINGINO_PRESETS
 
 	  CLI: thingino-preset list|show|diff|apply|undo|save|status
 	  Web UI: Settings > Presets
+
+config BR2_PACKAGE_THINGINO_PRESETS_UNIFI
+	bool "UniFi Protect mode"
+	default y
+	depends on BR2_PACKAGE_THINGINO_PRESETS
+	depends on BR2_PACKAGE_THINGINO_ONVIF
+	help
+	  Settings > UniFi Protect: one switch that applies (or undoes) the
+	  unifi-protect preset, readiness checks for native ONVIF adoption
+	  (event service, single motion topic, AAC audio, matching sensor and
+	  stream frame rates, shared ONVIF/RTSP login, clock) and the values
+	  to enter in Protect.

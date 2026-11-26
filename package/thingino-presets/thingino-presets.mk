@@ -18,6 +18,16 @@ define THINGINO_PRESETS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/www/x/json-config-presets.cgi $(TARGET_DIR)/var/www/x/json-config-presets.cgi
 endef
 
+ifeq ($(BR2_PACKAGE_THINGINO_PRESETS_UNIFI),y)
+define THINGINO_PRESETS_INSTALL_UNIFI
+	$(INSTALL) -D -m 0644 $(@D)/www/config-unifi.html $(TARGET_DIR)/var/www/config-unifi.html
+	$(INSTALL) -D -m 0644 $(@D)/www/a/config-unifi.js $(TARGET_DIR)/var/www/a/config-unifi.js
+	$(INSTALL) -D -m 0755 $(@D)/www/x/json-config-unifi.cgi $(TARGET_DIR)/var/www/x/json-config-unifi.cgi
+	$(INSTALL) -D -m 0644 $(@D)/unifi.webui.json $(TARGET_DIR)/var/www/a/plugins/presets-unifi.webui.json
+endef
+THINGINO_PRESETS_POST_INSTALL_TARGET_HOOKS += THINGINO_PRESETS_INSTALL_UNIFI
+endif
+
 # Keep user presets and the undo point across firmware upgrades: sysupgrade -B saves the paths in
 # /etc/cfg-backup.list to the backup partition and S37cfg-autorestore restores them on first boot.
 # A ROOTFS_PRE_CMD_HOOK because cfg-backup.list comes from the rootfs overlay (see thingino-rhkd).
