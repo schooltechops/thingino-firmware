@@ -47,6 +47,13 @@
                   </label>
                 </div>
                 <div class="form-check border rounded-3 p-2 position-relative">
+                  <input type="radio" name="otaOption" value="fullkeep" id="ota-fullkeep" class="form-check-input position-absolute top-50 translate-middle-y" style="left:1rem">
+                  <label for="ota-fullkeep" class="form-check-label d-block ms-3">
+                    <span class="fw-semibold">Full image, keep settings</span><br>
+                    <span class="small">Installs a pristine new image, but keeps logins, Wi-Fi, hostname, time zone, SSH keys and presets, so the camera comes back on the network. Other settings start from the new defaults.</span>
+                  </label>
+                </div>
+                <div class="form-check border rounded-3 p-2 position-relative">
                   <input type="radio" name="otaOption" value="partial" id="ota-partial" class="form-check-input position-absolute top-50 translate-middle-y" style="left:1rem">
                   <label for="ota-partial" class="form-check-label d-block ms-3">
                     <span class="fw-semibold">Partial update</span><br>

@@ -203,6 +203,7 @@ build_state_payload() {
   "ota": {
     "options": [
       {"id":"full","label":"Full image","flag":"-f","description":"Will erase everything and install a pristine new image. No customization will survive. You will have to reconfigure the system from scratch."},
+      {"id":"fullkeep","label":"Full image, keep settings","flag":"-f -K identity","description":"Installs a pristine new image like Full image, but keeps logins, Wi-Fi, hostname, time zone, SSH keys and presets, so the camera comes back on the network. Other settings start from the new defaults."},
       {"id":"partial","label":"Partial update","flag":"-p","description":"Will keep overlay partition with configuration and changed files. Most likely will end up in conflicts, so you might need to reset and reconfigure the system."},
       {"id":"bootloader","label":"Bootloader","flag":"-b","description":"Writes new bootloader only. Relatively safe operation when you know what you are doing. Intended for developers."}
     ],
@@ -277,6 +278,7 @@ ota_command_for_option() {
 	case "$(printf '%s' "$option" | tr 'A-Z' 'a-z')" in
 		bootloader) flag="-b" ;;
 		full) flag="-f" ;;
+		fullkeep) flag="-f -K identity" ;;
 		'' | partial) flag="-p" ;;
 		*) return 1 ;;
 	esac

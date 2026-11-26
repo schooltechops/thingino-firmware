@@ -3,7 +3,12 @@
 # cfg-backup - read/write config tarball to the raw 64KB backup MTD partition
 #
 # Usage:
-#   cfg-backup write [paths...]    (defaults to /etc/cfg-backup.list)
+#   cfg-backup write [--identity] [paths...]    (defaults to /etc/cfg-backup.list)
+#   cfg-backup build <file> [--identity] [paths...]
+#                                  same blob, written to <file> instead of the MTD (to splice into an
+#                                  image when this flash layout has no backup partition)
+#   --identity: only logins, Wi-Fi, hostname, time zone, SSH keys and presets -- what a camera needs to
+#               come back reachable; application configs then start from the new image's defaults
 #   cfg-backup restore
 #
 # Header (64 bytes, text):
@@ -29,10 +34,18 @@ die() {
 
 # Resolve the backup MTD partition by name - partition numbers are not
 # stable across flash layouts (NOR vs NAND). $CFG_BACKUP_MTD overrides.
-if [ -z "$MTD" ]; then
-	MTD="/dev/$(awk -F: '/"backup"$/{print $1}' /proc/mtd)"
-fi
-[ -e "$MTD" ] || die "backup MTD partition not found ($MTD)"
+need_mtd() {
+	if [ -z "$MTD" ]; then
+		MTD="/dev/$(awk -F: '/"backup"$/{print $1}' /proc/mtd)"
+	fi
+	[ -e "$MTD" ] || die "backup MTD partition not found ($MTD)"
+}
+
+# Logins, Wi-Fi, hostname, time zone, SSH keys, presets: enough for a camera to come back reachable after an
+# upgrade, without carrying application configs that may not match the new firmware.
+IDENTITY_PATHS="/etc/passwd /etc/passwd- /etc/shadow /etc/shadow- /etc/wpa_supplicant.conf /etc/hostname
+/etc/TZ /etc/timezone /etc/tz.user.json /etc/timezone.source /etc/ntp.source /etc/default/ntp.conf
+/etc/dropbear /root/.ssh/authorized_keys /etc/presets"
 
 # Try to erase the MTD partition. Uses flash_eraseall (whole partition)
 # or flash_erase (count blocks to cover the partition size).
@@ -50,6 +63,13 @@ do_erase() {
 }
 
 do_write() {
+	identity=false
+	if [ "$1" = "--identity" ]; then
+		shift
+		identity=true
+		# shellcheck disable=SC2086 # word splitting intended
+		set -- $IDENTITY_PATHS "$@"
+	fi
 	if [ $# -eq 0 ]; then
 		[ -f "$LIST_FILE" ] || die "no paths given and $LIST_FILE not found"
 		# Read paths from list file, skipping comments and blank lines.
@@ -61,8 +81,9 @@ do_write() {
 		done <"$LIST_FILE"
 	else
 		# CLI paths given - still prepend the list file so backups are
-		# self-describing.
-		set -- "$LIST_FILE" "$@"
+		# self-describing. Not for --identity: restoring an old list onto
+		# newer firmware would replace the list that firmware ships.
+		[ "$identity" = true ] || set -- "$LIST_FILE" "$@"
 	fi
 
 	# Drop paths that do not exist so tar does not abort midway
@@ -108,6 +129,13 @@ do_write() {
 	# Build combined header+payload file for flashcp
 	cat "$tmpd/header" "$tmpd/payload" >"$tmpd/combined"
 
+	if [ -n "$OUT_FILE" ]; then
+		cp "$tmpd/combined" "$OUT_FILE" || die "cannot write $OUT_FILE"
+		echo "cfg-backup: $sz bytes written to $OUT_FILE"
+		return 0
+	fi
+
+	need_mtd
 	do_erase
 	flashcp -v "$tmpd/combined" "$MTD" 2>/dev/null
 
@@ -115,6 +143,7 @@ do_write() {
 }
 
 do_restore() {
+	need_mtd
 	tmpd=$(mktemp -d)
 	trap 'rm -rf "$tmpd"' EXIT
 
@@ -156,9 +185,17 @@ case "${1:-}" in
 		shift
 		do_write "$@"
 		;;
+	build)
+		shift
+		[ -n "${1:-}" ] || die "usage: $0 build <file> [--identity] [paths...]"
+		OUT_FILE=$1
+		shift
+		do_write "$@"
+		;;
 	restore) do_restore ;;
 	*)
-		echo "Usage: $0 write <paths...>" >&2
+		echo "Usage: $0 write [--identity] [paths...]" >&2
+		echo "       $0 build <file> [--identity] [paths...]" >&2
 		echo "       $0 restore" >&2
 		exit 1
 		;;

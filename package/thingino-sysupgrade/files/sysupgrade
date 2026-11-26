@@ -383,7 +383,7 @@ flush_memory() {
 }
 
 show_help() {
-	echo -e "Usage: $0 [-x] [-f|-k|-r|-b|-p|<file>|<URL>] [--backup|-B]
+	echo -e "Usage: $0 [-x] [-f|-k|-r|-b|-p|<file>|<URL>] [--backup|-B] [-K identity|all]
 Where:
   -f      full upgrade with a binary from GitHub
   -k      kernel-only upgrade
@@ -393,7 +393,12 @@ Where:
   -d      release date (the latest available, if omitted)
   <file>  full or partial upgrade from a local file
   <URL>   full or partial upgrade from a URL
-  --backup|-B  create config backup before flashing
+  --backup|-B  create config backup before flashing (keeps everything in /etc/cfg-backup.list)
+  -K identity|all, --keep=identity|all
+          config backup with a chosen scope (implies -B): "identity" keeps logins, Wi-Fi, hostname,
+          time zone, SSH keys and presets, so application configs start from the new image's defaults;
+          "all" is the same as -B. Works across flash layouts: when this camera has no backup
+          partition, the backup is written into the new image's own backup partition before flashing.
   -x      do not update the script
   -h      this help"
 	exit 0
@@ -435,18 +440,29 @@ dl_dir="/tmp"
 fw_file="$workdir/fw.bin"
 download_dir_ready="false"
 do_backup="false"
+keep_mode=""
 
 flush_memory
 
-# Parse long options before getopts
-for arg in "$@"; do
-	case "$arg" in
+# Parse long options before getopts and drop them from the arguments:
+# getopts treats "--backup" as an unknown option and would print the help.
+_n=$#
+while [ "$_n" -gt 0 ]; do
+	_a=$1
+	shift
+	_n=$((_n - 1))
+	case "$_a" in
 		--backup) do_backup="true" ;;
+		--keep=*)
+			do_backup="true"
+			keep_mode="${_a#--keep=}"
+			;;
+		*) set -- "$@" "$_a" ;;
 	esac
 done
 
 ORIGINAL_ARG="$@"
-while getopts "b:Bd:fhkrpx" flag; do
+while getopts "b:Bd:fhK:krpx" flag; do
 	case "$flag" in
 		b)
 			upgrade="boot"
@@ -454,6 +470,10 @@ while getopts "b:Bd:fhkrpx" flag; do
 			;;
 		B)
 			do_backup="true"
+			;;
+		K)
+			do_backup="true"
+			keep_mode="$OPTARG"
 			;;
 		d)
 			requested_date=$OPTARG
@@ -481,6 +501,11 @@ while getopts "b:Bd:fhkrpx" flag; do
 	esac
 done
 shift "$((OPTIND - 1))"
+
+case "$keep_mode" in
+	"" | all | identity) ;;
+	*) die "-K takes identity or all, not '$keep_mode'" ;;
+esac
 
 # When a positional argument is present and is not a URL, it is a local
 # file.  Override any default GitHub URL that a mode flag may have set
@@ -703,10 +728,71 @@ get_mtd_dev() { awk -F: "/\"$1\"$/{print \$1}" /proc/mtd; }
 
 # Snapshot config files to the backup MTD partition before flashing.
 # cfg-backup is installed by this package (scripts/cfg-backup.sh).
+# "<offset> <size>" in bytes of the backup partition in the image's own partition table (the mtdparts=
+# string its U-Boot environment carries), so the image can differ in layout from this camera.
+image_backup_partition() {
+	local parts off=0 p sz name
+	# octal ranges: busybox tr mishandles a complemented [:print:] class
+	parts=$(tr '\000-\037\177-\377' '\n' <"$fw_file" | grep -o 'mtdparts=[a-z_]*:[0-9a-zA-Z@(),]*' | grep '(backup)' | head -1)
+	[ -n "$parts" ] || return 1
+	parts=${parts#*:}
+	for p in $(echo "$parts" | tr ',' ' '); do
+		name=${p#*(}
+		name=${name%)}
+		sz=${p%%(*}
+		sz=${sz%%@*}
+		case "$sz" in
+			*k) sz=$((${sz%k} * 1024)) ;;
+			*m | *M) sz=$((${sz%[mM]} * 1048576)) ;;
+			*[!0-9]* | "") return 1 ;;
+		esac
+		if [ "$name" = "backup" ]; then
+			echo "$off $sz"
+			return 0
+		fi
+		off=$((off + sz))
+	done
+	return 1
+}
+
+# No backup partition on this camera (older flash layout): build the same blob and write it into the backup
+# partition of the full image about to be flashed. First boot of the new firmware restores it (S37cfg-autorestore).
+splice_config_backup() {
+	local pos off sz blob="$workdir/cfg-backup.bin"
+	pos=$(image_backup_partition) || {
+		echo_c 160 "Warning: the image has no backup partition; settings will not be kept"
+		return 0
+	}
+	off=${pos% *}
+	sz=${pos#* }
+	if ! cfg-backup build "$blob" "$@" 2>/dev/null; then
+		echo_c 160 "Warning: cfg-backup build failed (non-fatal); settings will not be kept"
+		return 0
+	fi
+	[ "$(wc -c <"$blob")" -le "$sz" ] || {
+		echo_c 160 "Warning: backup larger than the image's backup partition; settings will not be kept"
+		return 0
+	}
+	dd if=/dev/zero bs=1024 count=$((sz / 1024)) 2>/dev/null | tr '\0' '\377' |
+		dd of="$fw_file" bs=1024 seek=$((off / 1024)) conv=notrunc 2>/dev/null
+	dd if="$blob" of="$fw_file" bs=1024 seek=$((off / 1024)) conv=notrunc 2>/dev/null
+	echo "Config backup ($(wc -c <"$blob") bytes) written into the image at offset $off"
+	rm -f "$blob"
+}
+
 create_config_backup() {
 	[ "$do_backup" = "true" ] || return 0
-	echo_c 112 "\nCreating config backup before upgrade"
-	if cfg-backup write 2>/dev/null; then
+	echo_c 112 "\nCreating config backup before upgrade (${keep_mode:-all})"
+	if [ "$keep_mode" = "identity" ]; then set -- --identity; else set --; fi
+	if ! grep -q '"backup"$' /proc/mtd; then
+		if [ "$fw_is_full" = "true" ]; then
+			splice_config_backup "$@"
+		else
+			echo_c 160 "Warning: no backup partition on this camera; settings are kept only by a full upgrade"
+		fi
+		return 0
+	fi
+	if cfg-backup write "$@" 2>/dev/null; then
 		echo "Config backup written to /dev/$(get_mtd_dev backup)"
 	else
 		echo_c 160 "Warning: cfg-backup failed (non-fatal)"
@@ -842,6 +928,7 @@ if [ -z "$mtd_dev" ]; then
 			# detached tmpfs process so overwriting rootfs cannot kill
 			# the flash loop or the SSH session.
 			echo "Full firmware upgrade"
+			fw_is_full="true"
 			create_config_backup
 			stop_services
 			clone_app /bin/busybox
