@@ -179,6 +179,7 @@ str rtsp session_name RAPTOR_RTSP_SESSION_NAME
 str rtsp session_info RAPTOR_RTSP_SESSION_INFO
 str rtsp session_timeout RAPTOR_RTSP_SESSION_TIMEOUT
 str rtsp tcp_sndbuf RAPTOR_RTSP_TCP_SNDBUF
+bool rtsp rtcp_sr RAPTOR_RTSP_RTCP_SR
 bool rtsp backchannel RAPTOR_RTSP_BACKCHANNEL
 str rtsp backchannel_codecs RAPTOR_RTSP_BACKCHANNEL_CODECS
 bool rtsp sei_timecode RAPTOR_RTSP_SEI_TIMECODE
